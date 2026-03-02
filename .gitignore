@@ -1,0 +1,18 @@
+# Vivado
+*.jou
+*.log
+*.str
+*.cache/
+*.hw/
+*.ip_user_files/
+*.runs/
+*.sim/
+*.gen/
+*.Xil/
+*.srcs/sources_1/ip/
+
+# Simulación
+xsim.dir/
+
+# Archivos temporales
+.DS_Store
