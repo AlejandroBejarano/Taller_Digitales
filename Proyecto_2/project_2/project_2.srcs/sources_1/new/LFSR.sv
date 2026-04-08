@@ -18,15 +18,14 @@ module LFSR #(parameter NUM_BITS = 4) //por defecto 4 BITS!
   // Purpose: Load up LFSR with Seed if Data Valid (DV) pulse is detected.
   // Othewise just run LFSR when enabled.
   always @(posedge clk)
-    begin
-      if (rst) // Reset con L�GICA NEGATIVA!
-         r_LFSR <= i_Seed_Data; //El sistema inicia con el valor establecido por i_Seed_Data
-      end
-      else if (enable == 1'b1) //mientras Enable es 1, entonces el sistema genera un nuevo valor!
-        begin
-            r_LFSR <= {r_LFSR[NUM_BITS-1:1], r_XNOR};
-        end
+  begin
+    if (rst) begin
+        r_LFSR <= i_Seed_Data;
     end
+    else if (enable == 1'b1) begin
+        r_LFSR <= {r_LFSR[NUM_BITS-1:1], r_XNOR};
+    end
+  end
  
   always @(*)
     begin
@@ -69,6 +68,7 @@ module LFSR #(parameter NUM_BITS = 4) //por defecto 4 BITS!
         end
         15: begin
           r_XNOR = r_LFSR[15] ^~ r_LFSR[14];
+
         end
         16: begin
           r_XNOR = r_LFSR[16] ^~ r_LFSR[15] ^~ r_LFSR[13] ^~ r_LFSR[4];
