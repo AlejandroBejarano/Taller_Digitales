@@ -71,7 +71,7 @@ module uart_prueba_3 (
     // Para SINTESIS:    WAIT_CYCLES = 16_000_000 * 2   (2 segundos)
     // Para SIMULACION:  WAIT_CYCLES = 200              (cambiar aqui)
     // -------------------------------------------------------------------------
-    localparam int WAIT_CYCLES = 16_000_000 * 2;
+    localparam int WAIT_CYCLES = 200;
 
     // -------------------------------------------------------------------------
     // FSM

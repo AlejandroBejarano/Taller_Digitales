@@ -27,6 +27,7 @@ module uart_prueba_3_tb;
     logic [3:0] led;
 
     // Generador de reloj
+    //CLK_PERIOD/2.0
     always #(CLK_PERIOD/2.0) clk_100MHz = ~clk_100MHz;
 
     // DUT
