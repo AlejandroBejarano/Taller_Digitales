@@ -5,7 +5,7 @@
 //           (1) Transmitir una pregunta completa byte a byte (MSG_LEN chars).
 //           (2) Esperar y capturar la respuesta del jugador PC (1 byte: A/B/C/D).
 //
-// Mapa de registros de uart_interface (spec PDF §3.4.2):
+// Mapa de registros de uart_interface
 //   addr=2'b00  CTRL  : bit0=send_pending (WC),  bit1=new_rx_flag (RW)
 //   addr=2'b10  TX    : bits[7:0] = byte a enviar
 //   addr=2'b11  RX    : bits[7:0] = byte recibido
@@ -158,8 +158,7 @@ module uart_fsm #(
             end
 
             TX_FETCH: begin
-                // ROM recibe rom_addr_o en este ciclo (calculada combinacionalmente).
-                // No se envía nada a uart_interface: we=0, salidas en default.
+                // ROM recibe rom_addr_o en este ciclo (ahora calculada secuencialmente).
             end
 
             TX_LOAD: begin
@@ -178,24 +177,17 @@ module uart_fsm #(
 
             TX_WAIT: begin
                 // Lee registro CTRL y monitorea bit0 (send_pending).
-                // Cuando send_pending=0 la transmisión terminó.
                 we_o   = 1'b0;
                 addr_o = 2'b00;
-                // [FIX-1]: inc_counter NO se activa aquí. Se controla desde
-                // el bloque comb de datapath para evitar doble incremento
-                // cuando char_counter ya está en MSG_LEN-1.
             end
             
             TX_DONE: begin
                 // Genera pulso de 1 ciclo indicando fin de transmisión (para iniciar timeout)
-                we_o      = 1'b0;
-                addr_o    = 2'b00;
                 tx_done_o = 1'b1; 
             end
 
             RX_WAIT: begin
                 // Lee registro CTRL y monitorea bit1 (new_rx_flag).
-                // Cuando new_rx_flag=1 hay un byte recibido disponible.
                 we_o   = 1'b0;
                 addr_o = 2'b00;
             end
@@ -210,7 +202,6 @@ module uart_fsm #(
                 // Limpia new_rx_flag en uart_interface escribiendo 0 en addr=00.
                 // [FIX-3]: wdata=0x0000_0000 → bit1=0 → uart_interface ejecuta:
                 //   if (!wdata_i[1]) new_rx_flag = 0  (condición de CLEAR del flag).
-                //   bit0=0 → no activa send_pending (condición: wdata_i[0]=1 para SET).
                 we_o    = 1'b1;
                 addr_o  = 2'b00;
                 wdata_o = 32'h0000_0000;
@@ -219,7 +210,6 @@ module uart_fsm #(
             DONE: begin
                 // El Control Principal captura rx_done_o en este ciclo.
                 rx_done_o = 1'b1;
-                // tx_done_o = 1'b1; <--- ELIMINAR ESTA LÍNEA (ya se disparó en TX_DONE)
             end
 
             default: ;
@@ -230,13 +220,24 @@ module uart_fsm #(
     // 4. Datapath Secuencial
     // =========================================================================
 
+    // --- Dirección a la ROM (Secuencial con Reset) ---
+    // [NUEVO]: Se convierte en registro para evitar XX en simulación.
+    // Se inicializa en 0 y carga base_addr_i al iniciar.
+    always_ff @(posedge clk_i) begin
+        if (rst_i) begin
+            rom_addr_o <= 32'd0;
+        end else if (current_state == IDLE && start_tx_i) begin
+            rom_addr_o <= base_addr_i;
+        end else if (inc_counter) begin
+            rom_addr_o <= rom_addr_o + 1'b1;
+        end
+    end
+
     // --- Control de inc_counter (Combinacional) ---
     // [FIX-1]: Se incrementa SOLO cuando:
     //   - Estamos en TX_WAIT (esperando fin de TX),
     //   - La transmisión terminó (send_pending=0), Y
     //   - No es el último caracter (char_counter < MSG_LEN-1).
-    // Esto evita el incremento fantasma en el último byte que haría
-    // char_counter llegar a MSG_LEN (fuera de rango).
     always_comb begin
         inc_counter = (current_state == TX_WAIT)              &&
                       (rdata_i[0] == 1'b0)                    &&
@@ -259,12 +260,5 @@ module uart_fsm #(
         else if (current_state == RX_READ)
             rx_data_o <= rdata_i[7:0];
     end
-
-    // =========================================================================
-    // 5. Dirección a la ROM (Combinacional)
-    //    Se mantiene estable durante TX_FETCH y TX_LOAD.
-    //    base_addr_i debe ser estable durante toda la transmisión de la pregunta.
-    // =========================================================================
-    assign rom_addr_o = base_addr_i + {{(32-CNT_W){1'b0}}, char_counter};
 
 endmodule

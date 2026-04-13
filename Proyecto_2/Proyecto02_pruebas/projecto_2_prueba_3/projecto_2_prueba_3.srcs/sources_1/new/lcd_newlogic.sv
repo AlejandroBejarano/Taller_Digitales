@@ -1,3 +1,4 @@
+`timescale 1ns / 1ps
 // =============================================================================
 // Proyecto : EL3313 Proyecto 2 - Jeopardy! (I Semestre 2026)
 // Archivo  : lcd_newlogic.sv
@@ -27,7 +28,7 @@
 //   • El archivo .coe debe apuntar al mismo directorio o configurarse en el IP.
 //   • Reloj único de 16 MHz generado externamente por PLL desde 100 MHz.
 // =============================================================================
-`timescale 1ns / 1ps
+
 
 // =============================================================================
 // Módulo 1: lcd_question_rom
@@ -53,18 +54,16 @@ module lcd_question_rom #(
     input  logic [$clog2(DEPTH)-1:0]  addr,   // 0..319
     output logic [WIDTH-1:0]          data_o
 );
-    (* rom_style = "block" *)
-    logic [WIDTH-1:0] mem [0:DEPTH-1];
 
-    // Inicialización sintetizable en Vivado: usa $readmemh con archivo .mem
-    // equivalente, o instancia directamente el IP Block Memory Generator con
-    // el .coe correspondiente. Aquí se usa readmemh como respaldo portable;
-    // para síntesis real, reemplazar este bloque por el IP BMG y conectar sus
-    // puertos a (clk, addr, data_o).
-    initial $readmemh(COE_FILE, mem);
-
-    always_ff @(posedge clk)
-        data_o <= mem[addr];
+    // CAMBIO: Se cambio la inferencia de BRAM con atributo (* rom_style = "block" *)
+    // y $readmemh por la instanciacion del IP de Vivado 'blk_mem_questions' porque
+    // $readmemh con archivos .coe no es soportado nativamente para simulacion y
+    // causaba valores XX.
+    blk_mem_questions ip_rom_questions (
+        .clka  (clk),
+        .addra (addr),
+        .douta (data_o)
+    );
 
 endmodule
 
@@ -88,13 +87,16 @@ module lcd_option_rom #(
     input  logic [$clog2(DEPTH)-1:0]  addr,   // 0..319
     output logic [WIDTH-1:0]          data_o
 );
-    (* rom_style = "block" *)
-    logic [WIDTH-1:0] mem [0:DEPTH-1];
 
-    initial $readmemh(COE_FILE, mem);
-
-    always_ff @(posedge clk)
-        data_o <= mem[addr];
+    // CAMBIO: Se cambio la inferencia de BRAM con atributo (* rom_style = "block" *)
+    // y $readmemh por la instanciacion del IP de Vivado 'blk_mem_options' porque
+    // $readmemh con archivos .coe no es soportado nativamente para simulacion y
+    // causaba valores XX.
+    blk_mem_options ip_rom_options (
+        .clka  (clk),
+        .addra (addr),
+        .douta (data_o)
+    );
 
 endmodule
 
@@ -118,6 +120,7 @@ endmodule
 //
 // Bits expuestos (Registro 1):
 //   bits [7:0] → reg_data (rw)
+// (Sin cambios estructurales, se mantiene idéntico al original)
 // =============================================================================
 module lcd_register_file (
     input  logic        clk_i,
@@ -210,7 +213,12 @@ endmodule
 //   TOGGLE_E_HIGH→ mantiene lcd_e activo ≥ 450 ns (2 ticks de 1 µs)
 //   TOGGLE_E_LOW → espera tiempo de ejecución del comando (50 µs ó 2 ms)
 // =============================================================================
-module lcd_driver_hw (
+// CAMBIO: Se agrego el parametro POWERON_US con valor por defecto 50000 porque
+// permite al testbench sobreescribirlo a 100 para acelerar la simulacion sin
+// afectar el comportamiento real en hardware.
+module lcd_driver_hw #(
+    parameter integer POWERON_US = 50000
+)(
     input  logic       clk,
     input  logic       rst,
     // Peticiones desde el registro de control
@@ -262,8 +270,15 @@ module lcd_driver_hw (
     drv_state_t state;
     logic [19:0] delay;
 
+    // CAMBIO: Se agrego exec_delay porque en el original SETUP sobreescribia
+    // el delay asignado en IDLE con DELAY_ENABLE_US, causando que el tiempo de
+    // ejecucion del comando no se respetara en TOGGLE_E_LOW.
+    logic [19:0] exec_delay;
+
     // Delays en microsegundos
-    localparam integer DELAY_POWERON_US = 20'd50000; // 50 ms
+    // CAMBIO: DELAY_POWERON_US ahora usa el parametro POWERON_US en lugar del
+    // literal 20'd50000 porque permite configurarlo externamente desde el testbench.
+    localparam integer DELAY_POWERON_US = POWERON_US;
     localparam integer DELAY_SLOW_US    = 20'd2000;  // 2 ms  (clear, home, cursor cmds)
     localparam integer DELAY_FAST_US    = 20'd50;    // 50 µs (escritura de dato/char)
     localparam integer DELAY_ENABLE_US  = 20'd2;     // 2 µs  (ancho pulso E ≥ 450 ns)
@@ -277,6 +292,7 @@ module lcd_driver_hw (
             lcd_rs     <= 1'b0;
             lcd_d      <= 8'h00;
             delay      <= DELAY_POWERON_US;
+            exec_delay <= 20'd0; // CAMBIO: Se agrego reset de exec_delay porque es un registro nuevo
         end else begin
             done_pulse <= 1'b0; // Pulso de un solo ciclo por defecto
 
@@ -291,16 +307,16 @@ module lcd_driver_hw (
                             if (clear_req) begin
                                 lcd_rs <= 1'b0;
                                 lcd_d  <= 8'h01; // Comando Clear Display
-                                delay  <= DELAY_SLOW_US;
+                                exec_delay <= DELAY_SLOW_US; // CAMBIO: Se guarda en exec_delay en lugar de delay porque SETUP sobreescribia delay con DELAY_ENABLE_US
                             end else if (home_req) begin
                                 lcd_rs <= 1'b0;
                                 lcd_d  <= 8'h02; // Comando Return Home
-                                delay  <= DELAY_SLOW_US;
+                                exec_delay <= DELAY_SLOW_US; // CAMBIO: Se guarda en exec_delay en lugar de delay porque SETUP sobreescribia delay con DELAY_ENABLE_US
                             end else begin
                                 lcd_rs <= rs_in;
                                 lcd_d  <= data_in;
                                 // Comandos de cursor/posición (≤0x03) son lentos
-                                delay  <= (~rs_in & (data_in <= 8'h03))
+                                exec_delay <= (~rs_in & (data_in <= 8'h03)) // CAMBIO: Se guarda en exec_delay en lugar de delay porque SETUP sobreescribia delay con DELAY_ENABLE_US
                                           ? DELAY_SLOW_US : DELAY_FAST_US;
                             end
                             state <= SETUP;
@@ -318,7 +334,7 @@ module lcd_driver_hw (
                     TOGGLE_E_HIGH: begin
                         if (delay == 20'd0) begin
                             lcd_e <= 1'b0;
-                            // delay ya tiene el valor de ejecución asignado en IDLE
+                            delay <= exec_delay; // CAMBIO: Se carga exec_delay en lugar de reutilizar delay porque SETUP lo habia sobreescrito con DELAY_ENABLE_US
                             state <= TOGGLE_E_LOW;
                         end else
                             delay <= delay - 1'b1;
@@ -363,15 +379,13 @@ endmodule
 //
 //   • question_num ∈ [0..9]  (4 bits, representa las 10 preguntas del banco)
 //   • question_off ∈ [0..31] (5 bits, desplazamiento dentro de los 32 bytes)
-//
-// Cambio respecto al original:
-//   Las ROMs ahora se implementan dentro de este archivo con lcd_question_rom
-//   y lcd_option_rom (inferencia de BRAM con .coe), en lugar de depender de
-//   archivos .mem externos leídos con $readmemh en el nivel superior.
-//   Para síntesis en Vivado, reemplaza los módulos de ROM por instancias de
-//   IP Block Memory Generator apuntando a los .coe (ver nota al inicio del archivo).
 // =============================================================================
-module lcd_peripheral (
+// CAMBIO: Se agrego el parametro POWERON_US porque permite propagarlo al driver
+// fisico desde peripheral_top para que el testbench pueda acortar el retardo
+// de encendido sin modificar el codigo interno del driver.
+module lcd_peripheral #(
+    parameter integer POWERON_US = 50000
+)(
     // Interfaz estándar de 32 bits (sección 3.4.3)
     input  logic        clk_i,
     input  logic        rst_i,
@@ -452,8 +466,13 @@ module lcd_peripheral (
 
     // -------------------------------------------------------------------------
     // Módulo 4: Driver físico HD44780
+    // CAMBIO: Se instancio el driver pasando el parametro POWERON_US porque
+    // en el codigo B no existia este parametro y el valor de power-on estaba
+    // fijo como literal dentro del driver sin posibilidad de configuracion externa.
     // -------------------------------------------------------------------------
-    lcd_driver_hw u_driver_hw (
+    lcd_driver_hw #(
+        .POWERON_US (POWERON_US)
+    ) u_driver_hw (
         .clk        (clk_i),
         .rst        (rst_i),
         .start_req  (pulse_start),
