@@ -281,7 +281,57 @@ module lcd_driver_hw #(
     localparam integer DELAY_POWERON_US = POWERON_US;
     localparam integer DELAY_SLOW_US    = 20'd2000;  // 2 ms  (clear, home, cursor cmds)
     localparam integer DELAY_FAST_US    = 20'd50;    // 50 µs (escritura de dato/char)
-    localparam integer DELAY_ENABLE_US  = 20'd2;     // 2 µs  (ancho pulso E ≥ 450 ns)
+    localparam integer DELAY_ENABLE_US  = 20'd2;     // 2 µs  (ancho pulso E >= 450 ns)
+
+    // =========================================================================
+    // CAMBIO: Se agregaron registros de latch (req_latched, clear_latched,
+    // home_latched, latched_data, latched_rs) en lugar de leer start_req,
+    // clear_req y home_req directamente en el estado IDLE, porque IDLE solo
+    // se evalua cuando tick_1us=1 (una vez cada 16 ciclos de reloj). Los
+    // pulsos provenientes de lcd_register_file duran exactamente 1 ciclo, por
+    // lo que hay una probabilidad de 15/16 de que el request ocurra en un
+    // ciclo donde tick_1us=0 y el comando se pierda. Esto causaba que en
+    // simulacion post-sintesis el LCD nunca completara escrituras y la tarea
+    // lcd_wait_done del testbench iterara hasta el timeout (31 ms por llamada),
+    // agotando el budget de 200 ms de simulacion antes del test UART.
+    // =========================================================================
+    logic       req_latched;
+    logic       clear_latched;
+    logic       home_latched;
+    logic [7:0] latched_data;
+    logic       latched_rs;
+
+    //CAMBIO: se invirtio el orden CLEAR/SET dentro del bloque always_ff por
+    //SET primero y CLEAR al final porque con asignaciones no bloqueantes (NBA)
+    //la ultima asignacion gana; con el orden anterior, si start_req llegaba
+    //en el mismo ciclo en que IDLE aceptaba el request previo, el CLEAR
+    //(que estaba al final) ganaba y el nuevo request se perdia silenciosamente.
+    always_ff @(posedge clk) begin
+        if (rst) begin
+            req_latched   <= 1'b0;
+            clear_latched <= 1'b0;
+            home_latched  <= 1'b0;
+            latched_data  <= 8'h00;
+            latched_rs    <= 1'b0;
+        end else begin
+            // Limpiar latches cuando IDLE acepta la solicitud (menor prioridad)
+            if (tick_1us && (state == IDLE) &&
+                (req_latched | clear_latched | home_latched)) begin
+                req_latched   <= 1'b0;
+                clear_latched <= 1'b0;
+                home_latched  <= 1'b0;
+            end
+            // Capturar request en cualquier flanco — va al final para ganar
+            // sobre el CLEAR si ambas condiciones ocurren en el mismo ciclo
+            if (start_req) begin
+                req_latched  <= 1'b1;
+                latched_data <= data_in;
+                latched_rs   <= rs_in;
+            end
+            if (clear_req) clear_latched <= 1'b1;
+            if (home_req)  home_latched  <= 1'b1;
+        end
+    end
 
     always_ff @(posedge clk) begin
         if (rst) begin
@@ -300,24 +350,29 @@ module lcd_driver_hw #(
                 case (state)
 
                     // ----------------------------------------------------------
+                    // CAMBIO: Se cambio start_req|clear_req|home_req por
+                    // req_latched|clear_latched|home_latched porque los pulsos
+                    // directos de 1 ciclo no coinciden con tick_1us (cada 16
+                    // ciclos). Se usan latched_data y latched_rs en vez de
+                    // data_in y rs_in para garantizar datos estables al procesar.
                     IDLE: begin
                         busy <= 1'b0;
-                        if (start_req | clear_req | home_req) begin
+                        if (req_latched | clear_latched | home_latched) begin
                             busy <= 1'b1;
-                            if (clear_req) begin
+                            if (clear_latched) begin
                                 lcd_rs <= 1'b0;
                                 lcd_d  <= 8'h01; // Comando Clear Display
-                                exec_delay <= DELAY_SLOW_US; // CAMBIO: Se guarda en exec_delay en lugar de delay porque SETUP sobreescribia delay con DELAY_ENABLE_US
-                            end else if (home_req) begin
+                                exec_delay <= DELAY_SLOW_US;
+                            end else if (home_latched) begin
                                 lcd_rs <= 1'b0;
                                 lcd_d  <= 8'h02; // Comando Return Home
-                                exec_delay <= DELAY_SLOW_US; // CAMBIO: Se guarda en exec_delay en lugar de delay porque SETUP sobreescribia delay con DELAY_ENABLE_US
-                            end else begin
-                                lcd_rs <= rs_in;
-                                lcd_d  <= data_in;
-                                // Comandos de cursor/posición (≤0x03) son lentos
-                                exec_delay <= (~rs_in & (data_in <= 8'h03)) // CAMBIO: Se guarda en exec_delay en lugar de delay porque SETUP sobreescribia delay con DELAY_ENABLE_US
-                                          ? DELAY_SLOW_US : DELAY_FAST_US;
+                                exec_delay <= DELAY_SLOW_US;
+                            end else begin // req_latched (start)
+                                lcd_rs <= latched_rs;
+                                lcd_d  <= latched_data;
+                                // Comandos de cursor/posicion (<=0x03) son lentos
+                                exec_delay <= (~latched_rs & (latched_data <= 8'h03))
+                                             ? DELAY_SLOW_US : DELAY_FAST_US;
                             end
                             state <= SETUP;
                         end

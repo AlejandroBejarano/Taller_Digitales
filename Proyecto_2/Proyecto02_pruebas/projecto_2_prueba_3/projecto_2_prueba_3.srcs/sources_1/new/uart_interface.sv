@@ -5,7 +5,7 @@
 // rst_i: reset sincrono
 // we_i: write enable, indica si se va a escribir (1) o leer (0) algun registro
 // addr_i: direccion del registro (2 bits)
-// wdata_i: datos a escribir en el registro (32 bits)
+// wdata_i: datos a escribir en el registro (32 bits) 
 //
 // Salidas:
 // rdata_o: datos leidos del registro (32 bits)

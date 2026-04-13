@@ -30,7 +30,16 @@ module tb_peripheral_top;
                                            // IMPORTANTE: debe coincidir con el
                                            // divisor del core UART real del profesor
     localparam integer MSG_LEN     = 32;    // Bytes por pregunta
-    localparam integer MAX_TIMEOUT = 500000; // Ciclos maximo para timeouts
+
+    // CAMBIO: Se separo MAX_TIMEOUT en tres constantes porque el valor unico
+    // de 500000 era insuficiente para el power-on de LCD con SIM_FAST=0
+    // (requiere ~800000 ciclos a 16 MHz) y excesivo para operaciones de UART.
+    // En simulacion post-sintesis los parametros MSG_LEN y SIM_FAST del DUT
+    // no se pueden sobreescribir (estan "baked-in" en el netlist), por lo que
+    // el LCD usa POWERON_US=50000 (default) -> 800000 ciclos de espera.
+    localparam integer LCD_POWERON_TIMEOUT = 900_000; // Cubre SIM_FAST=0 (800k ciclos)
+    localparam integer LCD_OP_TIMEOUT      =  50_000; // Cubre ops lentas (clear=32k ciclos)
+    localparam integer MAX_TIMEOUT         =  50_000; // Para UART y otros
 
     // =========================================================================
     // Senales del DUT
@@ -79,6 +88,14 @@ module tb_peripheral_top;
     integer pass_cnt = 0;
     integer fail_cnt = 0;
     integer test_num = 0;
+
+    // CAMBIO: Se inicializaron explicitamente a 0 las variables de medicion del
+    // buzzer porque en SystemVerilog los integers declarados a nivel de modulo
+    // son 'x' hasta que se asignan, causando que aparezcan como XXX en la
+    // simulacion post-sintesis cuando las tareas que los asignan no se ejecutan.
+    integer buzzer_edge_time1 = 0;
+    integer buzzer_edge_time2 = 0;
+    integer buzzer_period     = 0;
 
     // =========================================================================
     // Generacion de reloj: 16 MHz
@@ -194,7 +211,35 @@ module tb_peripheral_top;
     endtask
 
     // =========================================================================
-    // Task: esperar a que LCD complete operacion (busy=0, done=1)
+    // Task: esperar power-on inicial del LCD (usa timeout largo para SIM_FAST=0)
+    // CAMBIO: Se separo lcd_wait_poweron de lcd_wait_done porque el power-on
+    // necesita hasta 900000 ciclos (SIM_FAST=0, 50ms @ 16MHz), mientras que
+    // operaciones normales como escritura de caracter o clear solo necesitan
+    // hasta 50000 ciclos. Usar MAX_TIMEOUT=500000 para ambos causaba que el
+    // power-on fallara con SIM_FAST=0 (netlist post-sintesis).
+    // =========================================================================
+    task automatic lcd_wait_poweron();
+        integer timeout;
+        logic b, d;
+        timeout = 0;
+        b = 1'b1;
+        d = 1'b0;
+        while (b == 1'b1 || d == 1'b0) begin
+            lcd_read_status(b, d);
+            timeout++;
+            if (timeout > LCD_POWERON_TIMEOUT) begin
+                $display("  [TIMEOUT] LCD power-on excedio limite (%0d ciclos)", LCD_POWERON_TIMEOUT);
+                fail_cnt++;
+                return;
+            end
+        end
+    endtask
+
+    // =========================================================================
+    // Task: esperar a que LCD complete operacion normal (busy=0, done=1)
+    // CAMBIO: Se cambio MAX_TIMEOUT por LCD_OP_TIMEOUT (50000 ciclos) porque
+    // el valor anterior de 500000 causaba que cada timeout desperdiciara 31ms
+    // de simulacion, agotando el budget de 200ms antes del test UART.
     // =========================================================================
     task automatic lcd_wait_done();
         integer timeout;
@@ -205,8 +250,8 @@ module tb_peripheral_top;
         while (b == 1'b1 || d == 1'b0) begin
             lcd_read_status(b, d);
             timeout++;
-            if (timeout > MAX_TIMEOUT) begin
-                $display("  [TIMEOUT] LCD wait_done excedio limite");
+            if (timeout > LCD_OP_TIMEOUT) begin
+                $display("  [TIMEOUT] LCD wait_done excedio limite (%0d ciclos)", LCD_OP_TIMEOUT);
                 fail_cnt++;
                 return;
             end
@@ -275,8 +320,15 @@ module tb_peripheral_top;
 
     // =========================================================================
     // Task: esperar a que una senal suba (con timeout)
+    // CAMBIO: Se cambio "ref logic sig" a "const ref logic sig" porque "ref"
+    // sin "const" permite escritura al signal desde la tarea, lo que Vivado
+    // interpretaba como un driver adicional sobre uart_tx_done (que ya es
+    // manejado por el DUT), generando el warning VRFC 10-3823 de multiple
+    // concurrent drivers. Con "const ref" se mantiene la referencia en vivo
+    // (necesaria para leer el valor actualizado en cada iteracion del while)
+    // pero se prohíbe escritura, eliminando el falso warning.
     // =========================================================================
-    task automatic wait_for_signal(input string name, ref logic sig);
+    task automatic wait_for_signal(input string name, const ref logic sig);
         integer timeout;
         timeout = 0;
         while (sig !== 1'b1) begin
@@ -293,13 +345,12 @@ module tb_peripheral_top;
     // =========================================================================
     // Secuencia principal de pruebas
     // =========================================================================
-    // Buffer para captura de UART TX
+    // CAMBIO: Se declaro tx_captured a nivel de modulo (antes estaba junto a las
+    // variables de buzzer en el bloque initial) para que sea visible en la
+    // simulacion de ondas. En post-sintesis los arrays declarados dentro de
+    // initial blocks pueden quedar como XXX porque el simulador no los rastrea
+    // como senales observables.
     logic [7:0] tx_captured [0:MSG_LEN-1];
-
-    // Variables para medicion de buzzer
-    integer buzzer_edge_time1;
-    integer buzzer_edge_time2;
-    integer buzzer_period;
 
     initial begin
         // =================================================================
@@ -323,6 +374,11 @@ module tb_peripheral_top;
         play_ok        = 1'b0;
         play_error     = 1'b0;
         rx_pin         = 1'b1;  // UART idle = alto
+
+        // CAMBIO: Se inicializo tx_captured a 0xFF para que en la vista de ondas
+        // aparezca un valor conocido y no XXX en caso de que el test UART falle
+        // o la captura sea incompleta. Un byte 0xFF indica "no capturado".
+        for (int k = 0; k < MSG_LEN; k++) tx_captured[k] = 8'hFF;
 
         // =================================================================
         // TEST 1: Reset y estado inicial
@@ -352,8 +408,12 @@ module tb_peripheral_top;
         test_num = 2;
         $display("--- TEST %0d: LCD power-on ---", test_num);
 
-        // Esperar a que el LCD complete power-on (SIM_FAST=1 -> ~100 tick_1us)
-        lcd_wait_done();
+        // CAMBIO: Se cambio lcd_wait_done() por lcd_wait_poweron() porque
+        // en simulacion post-sintesis SIM_FAST=0 (no se puede sobreescribir
+        // el parametro en el netlist), por lo que el power-on tarda ~800000
+        // ciclos (50ms @ 16MHz) y MAX_TIMEOUT=500000 causaba timeout prematuro.
+        // lcd_wait_poweron usa LCD_POWERON_TIMEOUT=900000 ciclos.
+        lcd_wait_poweron();
         $display("  LCD power-on completado");
 
         begin
@@ -674,8 +734,10 @@ module tb_peripheral_top;
         @(posedge clk); rst = 1'b1;
         wait_clocks(10);
         @(posedge clk); rst = 1'b0;
-        // Re-esperar LCD power-on despues de reset
-        lcd_wait_done();
+        // CAMBIO: Se cambio lcd_wait_done por lcd_wait_poweron porque tras un
+        // reset el LCD vuelve a hacer el power-on completo (~800000 ciclos con
+        // SIM_FAST=0), y lcd_wait_done solo tiene timeout de 50000 ciclos.
+        lcd_wait_poweron();
 
         // Pulso corto de play_error (1 ciclo)
         @(posedge clk);
