@@ -1,3 +1,4 @@
+`timescale 1ns / 1ps
 // UART Standard Interface Module
 //
 // Entradas:
@@ -10,15 +11,13 @@
 // Salidas:
 // rdata_o: datos leidos del registro (32 bits)
 //
-`timescale 1ns / 1ps
-
 module uart_interface (
     input  logic        clk_i,
     input  logic        rst_i,
     input  logic        we_i,
     input  logic [1:0]  addr_i,
     input  logic [31:0] wdata_i,
-    output logic [31:0] rdata_o,
+    output logic [31:0] rdata_o, 
     input  logic        rx,
     output logic        tx
 );
@@ -37,25 +36,12 @@ module uart_interface (
 
     // Registro de control
     // CAMBIO: ctrl_reg[31:0] fue reemplazado por flags explicitos (send_pending y
-    //         new_rx_flag) para eliminar race conditions. En el codigo original, el
-    //         mismo always_ff escribia ctrl_reg[0] desde tres ramas distintas sin
-    //         orden garantizado (case 3'b100, if(tx_rdy), edge-detect), lo que
-    //         generaba comportamiento no determinista.
+    //         new_rx_flag) para eliminar race conditions.
     logic        send_pending;
     logic        new_rx_flag;
 
     // CAMBIO: next_send_pending y next_new_rx_flag se declaran aqui como logicas
-    //         combinacionales (driven por always_comb) en lugar de variables con
-    //         asignacion bloqueante (=) dentro de always_ff.
-    //         Razon: cuando se usan con (=) dentro de always_ff, Vivado las sintetiza
-    //         como flip-flops. Al no tener salidas usadas fuera del mismo bloque
-    //         always_ff, el sintetizador las elimina con el warning:
-    //           "Unused sequential element next_send_pending_reg was removed"
-    //           "Unused sequential element next_new_rx_flag_reg was removed"
-    //         Esto destruia la logica de prioridades en sintesis aunque funcionara
-    //         correctamente en simulacion behavioral, causando fallos en TEST 5
-    //         (segunda ronda) solo en post-synthesis. Al ser always_comb son wires
-    //         reales que Vivado nunca puede eliminar.
+    //         combinacionales (driven por always_comb)
     logic        next_send_pending;
     logic        next_new_rx_flag;
 
@@ -63,13 +49,20 @@ module uart_interface (
     logic        uart_rx_rdy;
     logic [7:0]  rx_data;
 
+    // =========================================================================
+    // CORRECCIÓN APLICADA: Señales "safe" para evitar propagación de 'X'
+    // =========================================================================
+    // tx_rdy_safe fuerza '0' durante reset, eliminando el 'x' en TX.
+    // uart_rx_rdy_safe hace lo mismo para RX, evitando que la FSM colapse.
+    logic        tx_rdy_safe;
+    logic        uart_rx_rdy_safe;
+    
+    assign tx_rdy_safe      = rst_i ? 1'b0 : tx_rdy;
+    assign uart_rx_rdy_safe = rst_i ? 1'b0 : uart_rx_rdy; 
+    // =========================================================================
+
     // -------------------------------------------------------------------------
     // rdata_o COMBINACIONAL
-    // CAMBIO: Se movio rdata_o de always_ff a always_comb para que la FSM
-    //         lea el valor actualizado en el mismo ciclo sin latencia adicional.
-    //         En el original, estar dentro del FF introducia un ciclo de retardo
-    //         que causaba lecturas desactualizadas (stale reads).
-    //         ctrl_reg[0] => send_pending, ctrl_reg[1] => new_rx_flag.
     // -------------------------------------------------------------------------
     always_comb begin
         case (addr_i)
@@ -81,14 +74,6 @@ module uart_interface (
 
     // -------------------------------------------------------------------------
     // Resolucion de prioridades COMBINACIONAL
-    // CAMBIO: Este bloque always_comb reemplaza las asignaciones bloqueantes (=)
-    //         que antes estaban dentro del always_ff. La logica de prioridades es:
-    //
-    //         send_pending: tx_rdy baja (prioridad maxima) > escritura bus (SET)
-    //         new_rx_flag:  uart_rx_rdy sube (SET, prioridad alta) > bus CLEAR
-    //
-    //         Al ser always_comb, next_* son wires sintetizables que sobreviven
-    //         la sintesis y producen el mismo comportamiento que en simulacion.
     // -------------------------------------------------------------------------
     always_comb begin
         // Valores por defecto: mantener estado actual de los FFs
@@ -97,32 +82,17 @@ module uart_interface (
 
         // Escrituras del bus (prioridad base)
         if (we_i && addr_i == 2'b00) begin
-            // CAMBIO: En lugar de escribir directamente en ctrl_reg, se usan
-            //         next_* para que la resolucion de prioridades ocurra de
-            //         forma controlada, evitando asignaciones que se pisan entre si.
             if ( wdata_i[0]) next_send_pending = 1'b1; // SET send_pending
             if (!wdata_i[1]) next_new_rx_flag  = 1'b0; // CLEAR new_rx_flag
         end
 
-        // CAMBIO: Prioridad SET > CLEAR para new_rx_flag.
-        //         En el original, ctrl_reg[1] se escribia desde el case (CLEAR) y
-        //         desde if(uart_rx_rdy) (SET) en el mismo always_ff sin orden
-        //         garantizado, con riesgo de perder bytes recibidos. Con next_*,
-        //         si uart_rx_rdy y el CLEAR ocurren en el mismo ciclo, el SET
-        //         tiene prioridad: el byte no se pierde.
-        if (uart_rx_rdy)
+        // Prioridad SET > CLEAR para new_rx_flag.
+        // SE USA LA SEÑAL SEGURA: uart_rx_rdy_safe en lugar de uart_rx_rdy
+        if (uart_rx_rdy_safe)
             next_new_rx_flag = 1'b1;
 
-        // CAMBIO: se agrego && send_pending porque tx_rdy=1 cuando la UART esta
-        //         inactiva (despues de reset y entre bytes), lo que cancelaba el
-        //         primer SET de send_pending en TX_START antes de que tx_start
-        //         pudiera pulsar. Sin && send_pending: FSM escribe wdata[0]=1 →
-        //         next_send_pending=1, pero tx_rdy=1 lo sobreescribe a 0 en el
-        //         mismo ciclo → tx_start = next_send_pending(0) && !send_pending(0)
-        //         = 0 → UART nunca transmite. Con && send_pending: el CLEAR solo
-        //         aplica cuando una transmision esta actualmente en curso, evitando
-        //         cancelar el SET antes de que el flanco de tx_start se genere.
-        if (tx_rdy && send_pending)
+        // Prioridad CLEAR send_pending
+        if (tx_rdy_safe && send_pending)
             next_send_pending = 1'b0;
     end
 
@@ -140,23 +110,33 @@ module uart_interface (
             // Escribir byte TX cuando la FSM accede a addr=10
             if (we_i && addr_i == 2'b10)
                 tx_reg <= wdata_i[7:0];
-
+                
             // Capturar byte recibido del modulo UART
-            if (uart_rx_rdy)
+            // SE USA LA SEÑAL SEGURA: uart_rx_rdy_safe en lugar de uart_rx_rdy
+            if (uart_rx_rdy_safe)
                 rx_reg <= rx_data;
 
             // Registrar los valores de prioridad resuelta (combinacional -> FF)
             send_pending <= next_send_pending;
             new_rx_flag  <= next_new_rx_flag;
 
-            // CAMBIO: Generacion de tx_start simplificada.
-            //         Antes se usaban las senales auxiliares 'send' y 'send_prev'
-            //         que Vivado tambien eliminaba como FFs inutilizados (warning
-            //         "Unused sequential element send_reg was removed"). Ahora se
-            //         detecta el flanco de subida comparando send_pending (valor FF
-            //         del ciclo anterior) con next_send_pending (wire combinacional
-            //         del ciclo actual). Un ciclo, sin FFs extra, sin warnings.
+            // Generacion de tx_start
             tx_start <= next_send_pending && !send_pending;
+        end
+    end
+
+    // DEBUG TEMPORAL: trazar señales criticas de TX
+    always_ff @(posedge clk_i) begin
+        if (!rst_i) begin
+            if (we_i && addr_i == 2'b00 && wdata_i[0])
+                $display("[UART_IF %0t] CTRL_WRITE: wdata[0]=1 -> next_sp=%0b sp=%0b tx_start_next=%0b",
+                    $time, next_send_pending, send_pending, next_send_pending && !send_pending);
+            if (tx_start)
+                $display("[UART_IF %0t] TX_START pulsed! tx_reg=0x%02h tx_rdy=%0b sp=%0b",
+                    $time, tx_reg, tx_rdy, send_pending);
+            if (tx_rdy)
+                $display("[UART_IF %0t] TX_RDY received! sp=%0b -> clr=%0b",
+                    $time, send_pending, tx_rdy && send_pending);
         end
     end
 
@@ -166,14 +146,7 @@ module uart_interface (
         .reset       (rst_i),
         .tx_start    (tx_start),
         .tx_rdy      (tx_rdy),
-        // CAMBIO: se pasa tx_reg (8 bits) directamente porque UART es byte-oriented.
-        //         Antes se hacia tx_reg[7:0] desde un registro de 32 bits, lo cual
-        //         era redundante e innecesariamente amplio.
         .data_in     (tx_reg),
-        // CAMBIO: uart_rx_rdy es salida del UART (indica dato listo); rx_data recibe
-        //         el byte. Antes, new_rx y rx_reg[7:0] estaban directamente conectados
-        //         al modulo UART sin las senales intermedias necesarias para el control
-        //         de flags.
         .rx_data_rdy (uart_rx_rdy),
         .data_out    (rx_data),
         .rx          (rx),

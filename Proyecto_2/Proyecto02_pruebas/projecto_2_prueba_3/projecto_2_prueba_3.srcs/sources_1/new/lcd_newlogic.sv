@@ -96,7 +96,7 @@ module lcd_option_rom #(
     // y $readmemh por la instanciacion del IP de Vivado 'blk_mem_options' porque
     // $readmemh con archivos .coe no es soportado nativamente para simulacion y
     // causaba valores XX.
-    // CAMBIO: se agrego .ena(1'b1) — misma razon que en blk_mem_questions.
+    // CAMBIO: se agrego .ena(1'b1) - misma razon que en blk_mem_questions.
     blk_mem_options ip_rom_options (
         .clka  (clk),
         .ena   (1'b1),
@@ -327,7 +327,7 @@ module lcd_driver_hw #(
                 clear_latched <= 1'b0;
                 home_latched  <= 1'b0;
             end
-            // Capturar request en cualquier flanco — va al final para ganar
+            // Capturar request en cualquier flanco - va al final para ganar
             // sobre el CLEAR si ambas condiciones ocurren en el mismo ciclo
             if (start_req) begin
                 req_latched  <= 1'b1;
