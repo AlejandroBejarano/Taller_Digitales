@@ -59,8 +59,12 @@ module lcd_question_rom #(
     // y $readmemh por la instanciacion del IP de Vivado 'blk_mem_questions' porque
     // $readmemh con archivos .coe no es soportado nativamente para simulacion y
     // causaba valores XX.
+    // CAMBIO: se agrego .ena(1'b1) porque el puerto ena del IP Block Memory
+    // Generator requiere conexion explicita; sin ella Vivado genera warning
+    // VRFC 10-5021 y en algunos modos de sintesis la memoria queda deshabilitada.
     blk_mem_questions ip_rom_questions (
         .clka  (clk),
+        .ena   (1'b1),
         .addra (addr),
         .douta (data_o)
     );
@@ -92,8 +96,10 @@ module lcd_option_rom #(
     // y $readmemh por la instanciacion del IP de Vivado 'blk_mem_options' porque
     // $readmemh con archivos .coe no es soportado nativamente para simulacion y
     // causaba valores XX.
+    // CAMBIO: se agrego .ena(1'b1) — misma razon que en blk_mem_questions.
     blk_mem_options ip_rom_options (
         .clka  (clk),
+        .ena   (1'b1),
         .addra (addr),
         .douta (data_o)
     );

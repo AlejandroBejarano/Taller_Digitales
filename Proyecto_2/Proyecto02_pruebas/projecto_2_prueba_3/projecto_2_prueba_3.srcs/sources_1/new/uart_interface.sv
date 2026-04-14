@@ -113,12 +113,16 @@ module uart_interface (
         if (uart_rx_rdy)
             next_new_rx_flag = 1'b1;
 
-        // CAMBIO: Prioridad tx_rdy > escritura en send_pending.
-        //         En el original, si tx_rdy llegaba en el mismo ciclo en que la
-        //         FSM escribia wdata[0]=1, ambas ramas colisionaban sobre ctrl_reg[0].
-        //         Con next_*, tx_rdy baja send_pending incondicionalmente (prioridad
-        //         maxima) y la escritura solo aplica si TX ya esta libre.
-        if (tx_rdy)
+        // CAMBIO: se agrego && send_pending porque tx_rdy=1 cuando la UART esta
+        //         inactiva (despues de reset y entre bytes), lo que cancelaba el
+        //         primer SET de send_pending en TX_START antes de que tx_start
+        //         pudiera pulsar. Sin && send_pending: FSM escribe wdata[0]=1 →
+        //         next_send_pending=1, pero tx_rdy=1 lo sobreescribe a 0 en el
+        //         mismo ciclo → tx_start = next_send_pending(0) && !send_pending(0)
+        //         = 0 → UART nunca transmite. Con && send_pending: el CLEAR solo
+        //         aplica cuando una transmision esta actualmente en curso, evitando
+        //         cancelar el SET antes de que el flanco de tx_start se genere.
+        if (tx_rdy && send_pending)
             next_send_pending = 1'b0;
     end
 

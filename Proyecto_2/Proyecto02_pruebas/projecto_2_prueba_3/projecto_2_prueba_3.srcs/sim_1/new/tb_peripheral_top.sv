@@ -489,7 +489,13 @@ module tb_peripheral_top;
                 uart_start_tx  <= 1'b0;
                 // Esperar a que la FSM complete TX
                 wait_for_signal("uart_tx_done", uart_tx_done);
-                $display("  uart_tx_done recibido");
+                // CAMBIO: se agrego verificacion de uart_tx_done antes del display
+                // porque wait_for_signal imprime [TIMEOUT] y retorna sin que la
+                // senal haya llegado; el display anterior era siempre incondicional,
+                // lo que generaba "uart_tx_done recibido" incluso en caso de timeout.
+                if (uart_tx_done === 1'b1)
+                    $display("  uart_tx_done recibido correctamente");
+                // (si fue timeout, wait_for_signal ya imprimio [TIMEOUT])
             end
         join
 
