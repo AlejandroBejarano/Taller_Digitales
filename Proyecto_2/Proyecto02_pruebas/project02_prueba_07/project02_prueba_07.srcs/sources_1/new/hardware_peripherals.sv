@@ -1,5 +1,5 @@
 // =============================================================================
-// hardware_peripherals.sv — Módulos de hardware de bajo nivel para Jeopardy
+// hardware_peripherals.sv - Módulos de hardware de bajo nivel para Jeopardy
 // (Display 7-seg, LCD driver HD44780, y Debouncer)
 // =============================================================================
 `timescale 1ns / 1ps
@@ -67,9 +67,11 @@ module segments (
     logic [3:0] timer_units;
 
     assign timer_safe      = (timer_i > 6'd30) ? 6'd30 : timer_i;
-    assign timer_tens      = (timer_safe >= 6'd20) ? 4'd2 :
+    assign timer_tens      = (timer_safe >= 6'd30) ? 4'd3 :
+                             (timer_safe >= 6'd20) ? 4'd2 :
                              (timer_safe >= 6'd10) ? 4'd1 : 4'd0;
-    assign timer_remainder = (timer_tens == 4'd2) ? 6'd20 :
+    assign timer_remainder = (timer_tens == 4'd3) ? 6'd30 : 
+                             (timer_tens == 4'd2) ? 6'd20 :
                              (timer_tens == 4'd1) ? 6'd10 : 6'd0;
     assign timer_units     = timer_safe - timer_remainder;
 
@@ -413,3 +415,4 @@ module lcd_driver (
 
     assign lcd_done_o = done_pulse;
 endmodule
+
