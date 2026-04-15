@@ -1,5 +1,5 @@
 // =============================================================================
-// peripheral_top.sv — Módulo Integrador de Periféricos (UART, LCD, Segments, Buzzer)
+// peripheral_top.sv - Módulo Integrador de Periféricos (UART, LCD, Segments, Buzzer)
 // =============================================================================
 `timescale 1ns / 1ps
 
@@ -91,6 +91,8 @@ module peripheral_top (
         .rst_i        (rst),
         .start_i      (enable_uart_i),      
         .question_idx_i(question_idx_i),   
+        .done_o       (),
+        .busy_o       (),
         .rom_q_addr_o (rom_q_addr_uart),
         .rom_q_data_i (rom_q_data_uart),
         .rom_a_addr_o (rom_a_addr_uart),

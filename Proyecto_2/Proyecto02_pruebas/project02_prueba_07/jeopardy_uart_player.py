@@ -55,35 +55,85 @@ BG_BLUE = "\033[44m"
 BG_GREEN = "\033[42m"
 BG_RED   = "\033[41m"
 
+import wave
+import struct
+import math
+import subprocess
+import tempfile
+
 # =============================================================================
-# Sonido de feedback (beep del sistema)
+# Generación de Sonidos y Melodías (10 Segundos y Asíncrono)
 # =============================================================================
-def play_correct_sound():
-    """Reproduce sonido de respuesta correcta."""
-    try:
-        # Intentar con beep del sistema
-        if sys.platform == "linux":
-            os.system("(speaker-test -t sine -f 880 -l 1 > /dev/null 2>&1 &); sleep 0.15; kill $! 2>/dev/null")
-        elif sys.platform == "darwin":
-            os.system("afplay /System/Library/Sounds/Glass.aiff &")
+def _generate_wav(frequencies, durations, filename):
+    """Genera un archivo WAV a partir de frecuencias y duraciones."""
+    sample_rate = 44100
+    with wave.open(filename, 'w') as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        
+        # Guardaremos todos los samples en un buffer para escribirlos de una vez
+        samples = []
+        phase = 0.0
+        for freq, duration in zip(frequencies, durations):
+            num_samples = int(duration * sample_rate)
+            for _ in range(num_samples):
+                phase += 2.0 * math.pi * freq / sample_rate
+                # Onda cuadrada simple (estilo 8-bits retro)
+                val = 15000 if math.sin(phase) > 0 else -15000
+                samples.append(struct.pack('<h', val))
+        wav_file.writeframes(b''.join(samples))
+
+def _play_melody_async(is_win):
+    """Reproduce en un hilo separado un sonido WAV generado al vuelo por 10s."""
+    def worker():
+        freqs = []
+        durs  = []
+        
+        if is_win:
+            # 10 Segundos de victoria: Arpegio ascendente repetitivo rápido
+            # 4 notas * 0.1s = 0.4s por ciclo. Repetimos 25 veces = 10 segundos.
+            seq_f = [523.25, 659.25, 783.99, 1046.50]  # C5, E5, G5, C6
+            seq_d = [0.1, 0.1, 0.1, 0.1]
+            freqs = seq_f * 25
+            durs  = seq_d * 25
         else:
-            import winsound
-            winsound.Beep(880, 150)
-    except Exception:
-        print("\a", end="", flush=True)  # Fallback: ASCII bell
+            # 10 Segundos de error/derrota: Tonos descendentes disonantes
+            # 5 notas * 0.4s = 2.0s por ciclo. Repetimos 5 veces = 10 segundos.
+            seq_f = [200.0, 180.0, 160.0, 140.0, 120.0]
+            seq_d = [0.4, 0.4, 0.4, 0.4, 0.4]
+            freqs = seq_f * 5
+            durs  = seq_d * 5
+            
+        # Crear un archivo temporal
+        tmp_wav = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+        tmp_wav.close()
+        
+        try:
+            _generate_wav(freqs, durs, tmp_wav.name)
+            
+            # Reproducir el WAV con las herramientas nativas del SO
+            if sys.platform == "linux":
+                subprocess.run(["aplay", "-q", tmp_wav.name])
+            elif sys.platform == "darwin":
+                subprocess.run(["afplay", tmp_wav.name])
+            else:
+                import winsound
+                winsound.PlaySound(tmp_wav.name, winsound.SND_FILENAME)
+        except Exception as e:
+            pass
+        finally:
+            if os.path.exists(tmp_wav.name):
+                os.remove(tmp_wav.name)
+
+    # Iniciar el hilo en segundo plano (daemon=True para cerrarlo si sale el script)
+    threading.Thread(target=worker, daemon=True).start()
+
+def play_correct_sound():
+    _play_melody_async(is_win=True)
 
 def play_incorrect_sound():
-    """Reproduce sonido de respuesta incorrecta."""
-    try:
-        if sys.platform == "linux":
-            os.system("(speaker-test -t sine -f 220 -l 1 > /dev/null 2>&1 &); sleep 0.3; kill $! 2>/dev/null")
-        elif sys.platform == "darwin":
-            os.system("afplay /System/Library/Sounds/Basso.aiff &")
-        else:
-            import winsound
-            winsound.Beep(220, 300)
-    except Exception:
-        print("\a\a", end="", flush=True)
+    _play_melody_async(is_win=False)
 
 # =============================================================================
 # Funciones de display

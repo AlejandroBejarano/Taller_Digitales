@@ -1,5 +1,5 @@
 // =============================================================================
-// lcd_fsm.sv — Máquina de estados para el despliegue visual del juego Jeopardy
+// lcd_fsm.sv - Máquina de estados para el despliegue visual del juego Jeopardy
 // 
 // Controla el periférico LCD de 32 bits y las lecturas a la ROM para mostrar:
 //   - Vista de Pregunta (Q_VIEW): 32 caracteres estáticos (16 arriba, 16 abajo)
@@ -68,7 +68,7 @@ module lcd_fsm (
 
     // Vistas y Cursor
     logic       view_mode;         // 0 = PREGUNTA, 1 = OPCIONES
-    logic [1:0] sel_option;        // 0=A, 1=B, 2=C, 3=D
+    logic [2:0] sel_option;        // 0=A, 1=B, 2=C, 3=D, 4=Ninguno
     logic       answered;          // Flag 1 = jugador ya presionó OK
     logic [4:0] char_count;        // 0 a 31
     logic [8:0] base_addr;
