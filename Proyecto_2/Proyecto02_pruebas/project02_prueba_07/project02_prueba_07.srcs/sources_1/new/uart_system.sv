@@ -1,3 +1,56 @@
+// =============================================================================
+// uart_system.sv — Top de prueba de envío de pregunta y recepción de respuesta
+//
+// Propósito:
+//   Módulo de prueba que demuestra el ciclo básico del juego:
+//   al presionar un botón, envía una pregunta fija por UART carácter a
+//   carácter y luego espera la respuesta del usuario Python.
+//   La respuesta recibida (A/B/C/D) se indica en los LEDs de la FPGA.
+//
+// Flujo de operación:
+//   1. Espera flanco de subida en btn_start_i (después de sincronización).
+//   2. Transmite cada byte de question_rom[] (25 bytes) byte a byte,
+//      esperando a que send_pending baje entre cada carácter.
+//   3. Tras enviar el último byte, espera new_rx_flag=1.
+//   4. Lee la respuesta y la mapea en los LEDs:
+//        'A' (0x41) → led = 0001
+//        'B' (0x42) → led = 0010
+//        'C' (0x43) → led = 0100
+//        Otro       → led = 1000
+//   5. Regresa a IDLE para la siguiente pregunta.
+//
+// FSM (fsm_state_t):
+//   IDLE            – Espera btn_start_pulse (flanco del botón).
+//   LOAD_CHAR       – Escribe byte actual de ROM en reg TX (addr=10).
+//   TRIGGER_SEND    – Activa send_pending (addr=00, bit0=1).
+//   WAIT_1_CYCLE    – Ciclo de latencia para que send_pending aparezca en rdata.
+//   WAIT_SEND_DONE  – Polling: espera send_pending=0.
+//   CHECK_NEXT_CHAR – Si quedan bytes, incrementa char_index y va a LOAD_CHAR;
+//                     si se terminó la pregunta, va a WAIT_ANSWER.
+//   WAIT_ANSWER     – Polling: espera new_rx_flag=1 (addr=00, bit1).
+//   READ_ANSWER     – Lee byte de RX (addr=11), evalúa y vuelve a IDLE.
+//
+// Entradas:
+//   clk_100MHz  – Reloj de entrada de la Basys3 (100 MHz → 16 MHz via PLL).
+//   rst_i       – BTNC activo alto.
+//   btn_start_i – Botón Arriba: flanco de subida inicia la transmisión.
+//   rx          – Línea serie de recepción (pin FPGA).
+//
+// Salidas:
+//   tx          – Línea serie de transmisión (pin FPGA).
+//   led[3:0]    – Indica la opción respondida por el jugador PC.
+//
+// Variables internas:
+//   clk_16MHz       – Reloj de 16 MHz del PLL.
+//   locked          – Señal de estabilidad del PLL.
+//   rst_sys         – Reset sincronizado (rst_i OR ~locked).
+//   btn_sync1/2     – Sincronizadores de 2 etapas para btn_start_i.
+//   btn_start_pulse – Pulso de 1 ciclo en flanco de subida del botón.
+//   we/addr/wdata/rdata – Bus estándar hacia uart_interface.
+//   char_index      – Índice del byte actual en question_rom.
+//   player_answer   – Byte recibido del jugador PC.
+//   question_rom[]  – ROM de 25 bytes con el texto de la pregunta.
+// =============================================================================
 `timescale 1ns / 1ps
 
 module uart_system (

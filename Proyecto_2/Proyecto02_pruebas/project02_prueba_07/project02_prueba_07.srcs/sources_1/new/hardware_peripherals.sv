@@ -1,11 +1,37 @@
 // =============================================================================
-// hardware_peripherals.sv - Módulos de hardware de bajo nivel para Jeopardy
-// (Display 7-seg, LCD driver HD44780, y Debouncer)
+// hardware_peripherals.sv — Módulos de hardware de bajo nivel para Jeopardy
+//
+// Contiene tres módulos independientes:
+//
+//   debouncer       – Elimina el rebote mecánico de un botón.
+//   segments        – Multiplexor de display 7-seg de 4 dígitos (timer + puntos).
+//   lcd_peripheral  – Periférico LCD HD44780 con bus de 32 bits tipo memoria.
+//   lcd_driver      – Driver físico HD44780: genera pulsos EN y secuencia de init.
+//
+// Jerarquía: lcd_peripheral instancia a lcd_driver.
+//            jeopardy_top / peripheral_top instancian debouncer, segments y lcd_peripheral.
 // =============================================================================
 `timescale 1ns / 1ps
 
 // =============================================================================
-// Debouncer
+// debouncer — Eliminador de rebote para botones mecánicos
+//
+// Propósito:
+//   Filtra el ruido eléctrico (bouncing) de un botón mediante un contador.
+//   Solo actualiza btn_out cuando la entrada ha permanecido estable por
+//   COUNT_MAX ciclos de reloj consecutivos.
+//
+// Entradas:
+//   clk     – Reloj del sistema.
+//   reset   – Reset activo alto; fuerza btn_out=0.
+//   btn_in  – Señal cruda del botón (puede tener rebote).
+//
+// Salidas:
+//   btn_out – Señal limpia (debounced), 1 = botón presionado, 0 = suelto.
+//
+// Parámetro:
+//   COUNT_MAX – Número de ciclos de estabilidad requeridos. En hardware real
+//               usar 1,000,000 (≈62.5 ms a 16 MHz); en simulación usar 20.
 // =============================================================================
 module debouncer (
     input logic clk,
@@ -44,7 +70,35 @@ endmodule
 
 
 // =============================================================================
-// Segments (Multiplexor de 4 Anodes)
+// segments — Display 7-segmentos multiplexado de 4 dígitos
+//
+// Propósito:
+//   Muestra en 4 dígitos del display 7-seg de la Basys3 los valores:
+//     Dígito 3 (izquierda): decenas del timer (0-3)
+//     Dígito 2:             unidades del timer (0-9)
+//     Dígito 1:             puntaje del jugador FPGA (0-9)
+//     Dígito 0 (derecha):   puntaje del jugador PC (0-9)
+//
+//   La multiplexación rota entre los 4 ánodos cada MUX_DIV ciclos de reloj
+//   (4000 ciclos ≈ 250 µs a 16 MHz → ~4 kHz de refresco).
+//
+// Entradas:
+//   clk_i        – Reloj del sistema (16 MHz).
+//   rst_i        – Reset activo alto; apaga todos los segmentos.
+//   timer_i      – Tiempo restante en segundos (0-30); se limita a 30.
+//   score_fpga_i – Puntuación del jugador FPGA (0-9).
+//   score_pc_i   – Puntuación del jugador PC (0-9).
+//
+// Salidas:
+//   seg_o – Segmentos a encender (activo bajo, bits: G F E D C B A).
+//   an_o  – Ánodos activos (activo bajo; solo uno en 0 a la vez).
+//   dp_o  – Punto decimal (siempre apagado = 1 activo-bajo).
+//
+// Variables internas:
+//   mux_cnt    – Contador de refresco (0..MUX_DIV-1).
+//   digit_sel  – Dígito activo actual (3=izq → 0=der, decrementa cada MUX_DIV ciclos).
+//   timer_safe – Valor del timer clampado a 30.
+//   timer_tens / timer_units – Descomposición BCD del timer.
 // =============================================================================
 module segments (
     input  logic        clk_i,
@@ -137,7 +191,48 @@ endmodule
 
 
 // =============================================================================
-// LCD PERIPHERAL
+// lcd_peripheral — Periférico LCD HD44780 con bus de 32 bits tipo memoria
+//
+// Propósito:
+//   Traduce escrituras del bus de 32 bits (addr+wdata) en comandos para
+//   el driver físico HD44780 (lcd_driver). Actúa como controlador de
+//   nivel medio: mantiene registros de control y datos, y genera los
+//   pulsos de 1 ciclo que lcd_driver necesita.
+//
+// Mapa de registros (addr_i):
+//   2'b00 (CTRL) — escritura:
+//       bit0 = 1 → cmd_start (enviar byte en reg_data_byte al LCD)
+//       bit1     → reg_rs (0=comando, 1=dato de carácter)
+//       bit2 = 1 → cmd_clear (limpiar pantalla)
+//       bit3 = 1 → cmd_home  (cursor al inicio)
+//              *** Solo se activan si el driver NO está ocupado ***
+//             lectura:
+//       bit0     → reg_rs actual
+//       bit7     → drv_busy (driver ocupado)
+//       bit15    → flag_done (última operación terminó)
+//   2'b01 (DATA) — escritura: carga reg_data_byte con wdata[7:0]
+//                — lectura:  {24'd0, reg_data_byte}
+//
+// Entradas:
+//   clk_i          – Reloj del sistema (16 MHz).
+//   rst_i          – Reset activo alto.
+//   write_enable_i – 1 = hay escritura en el bus este ciclo.
+//   addr_i         – Registro destino (ver mapa arriba).
+//   wdata_i        – Dato a escribir (32 bits).
+//
+// Salidas:
+//   rdata_o        – Lectura del registro apuntado.
+//   lcd_rs_o       – RS al LCD (0=comando, 1=dato).
+//   lcd_rw_o       – RW al LCD (siempre 0 = escritura).
+//   lcd_en_o       – Enable al LCD (pulso de sincronización).
+//   lcd_data_o     – Bus de datos de 8 bits al LCD.
+//
+// Variables internas:
+//   reg_rs         – Copia del bit RS más reciente.
+//   reg_data_byte  – Byte a enviar al LCD.
+//   flag_done      – Latch: se activa cuando lcd_driver señaliza done.
+//   ctrl_start_w1p / ctrl_clear_w1p / ctrl_home_w1p – Pulsos de 1 ciclo
+//                   que se generan si el driver no está ocupado.
 // =============================================================================
 module lcd_peripheral (
     input  logic        clk_i,
@@ -232,7 +327,53 @@ endmodule
 
 
 // =============================================================================
-// LCD DRIVER HD44780
+// lcd_driver — Driver físico para LCD compatible HD44780 (modo 8 bits)
+//
+// Propósito:
+//   Genera la secuencia de inicialización requerida por el HD44780 al encendido
+//   y, una vez listo (S_READY), acepta comandos de escritura individuales.
+//   Produce los pulsos físicos RS, RW, EN y el bus de 8 bits de datos.
+//
+// Secuencia de inicialización (automática al salir de reset):
+//   S_POWERON     – Espera 40 ms (640k ciclos) tras encendido.
+//   S_INIT_FS1-4  – Envía Function Set 0x30 × 3 + 0x38 (8 bits, 2 líneas, 5×8).
+//   S_INIT_DC     – Display ON, cursor OFF (0x0C).
+//   S_INIT_CLR    – Clear Display (0x01).
+//   S_INIT_EM     – Entry Mode Set (0x06: incrementar cursor, no shift).
+//   → S_READY (lcd_busy_o = 0; listo para recibir comandos).
+//
+// Ciclo de escritura de un byte (states S_SETUP → S_DONE):
+//   S_SETUP    – Carga RS, RW y el dato en los pines.
+//   S_EN_HIGH  – Pulso EN a 1 por T_EN_HIGH ciclos (≥450 ns).
+//   S_EN_LOW   – Espera T_EN_SETTLE tras bajar EN.
+//   S_CMD_WAIT – Espera hasta que el LCD procese: T_CMD (800 ciclos ≈50 µs)
+//                o T_CLEAR (25600 ciclos ≈1.6 ms) para Clear/Home.
+//   S_DONE     – Genera done_pulse=1 por 1 ciclo, regresa a S_READY.
+//
+// Entradas:
+//   clk          – Reloj del sistema (16 MHz).
+//   rst          – Reset activo alto; reinicia secuencia de inicialización.
+//   cmd_data_i   – Byte a enviar (comando o dato ASCII).
+//   cmd_rs_i     – 0=comando, 1=dato de carácter.
+//   cmd_start_i  – Pulso de 1 ciclo: iniciar transferencia de cmd_data_i.
+//   cmd_clear_i  – Pulso de 1 ciclo: enviar Clear Display (0x01).
+//   cmd_home_i   – Pulso de 1 ciclo: enviar Return Home (0x02).
+//
+// Salidas:
+//   lcd_busy_o   – 1 mientras el driver está inicializando o procesando.
+//   lcd_done_o   – Pulso de 1 ciclo: el último comando terminó.
+//   lcd_rs_o     – RS al LCD.
+//   lcd_rw_o     – RW al LCD (siempre 0).
+//   lcd_en_o     – Enable al LCD.
+//   lcd_data_o   – Bus de datos D7-D0 al LCD.
+//
+// Variables internas:
+//   delay_cnt    – Contador de ciclos para temporización.
+//   delay_target – Período de espera en S_CMD_WAIT (T_CMD o T_CLEAR).
+//   lcd_data_reg – Dato latcheado al inicio del ciclo de escritura.
+//   lcd_rs_reg   – RS latcheado al inicio del ciclo de escritura.
+//   is_clear_home– 1 si el comando es Clear o Home (espera T_CLEAR en CMD_WAIT).
+//   done_pulse   – Genera lcd_done_o por 1 ciclo.
 // =============================================================================
 module lcd_driver (
     input  logic        clk,

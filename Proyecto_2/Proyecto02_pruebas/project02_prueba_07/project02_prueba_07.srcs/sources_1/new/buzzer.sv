@@ -1,13 +1,40 @@
 // =============================================================================
-// buzzer.sv — Generador de tonos para retroalimentación de juego Jeopardy
+// buzzer.sv — Generador de tonos PWM para retroalimentación sonora
+//
+// Genera una onda cuadrada de frecuencia fija durante 1 segundo cuando
+// recibe un pulso de comando. El tono depende del resultado de la ronda:
+//   play_ok_i  → 1000 Hz (tono agudo de victoria)
+//   play_err_i → 300 Hz  (tono grave de error/timeout)
+//
+// Si ambos pulsos llegan en el mismo ciclo, play_ok_i tiene prioridad.
+//
+// Entradas:
+//   clk_i      – Reloj de 16 MHz.
+//   rst_i      – Reset activo alto.
+//   play_ok_i  – Pulso de 1 ciclo: respuesta correcta → tono WIN.
+//   play_err_i – Pulso de 1 ciclo: respuesta incorrecta / timeout → tono ERR.
+//
+// Salidas:
+//   buzzer_o   – Onda cuadrada al pin del Pmod (buzzer piezoeléctrico pasivo).
+//
+// Parámetros internos:
+//   WIN_TOP    – Medio-período del tono de victoria en ciclos de 16 MHz.
+//   ERR_TOP    – Medio-período del tono de error en ciclos de 16 MHz.
+//   DURATION   – Duración del tono: 1 s = 16,000,000 ciclos a 16 MHz.
+//
+// Variables internas:
+//   duration_cnt – Contador de ciclos durante los que suena el buzzer.
+//   tone_cnt     – Contador de ciclos dentro del medio-período actual.
+//   tone_top     – Medio-período activo (WIN_TOP o ERR_TOP, latched al inicio).
+//   playing      – Flag: 1 mientras el buzzer está activo.
 // =============================================================================
 `timescale 1ns / 1ps
 
 module buzzer (
     input  logic clk_i,       // Reloj sistema 16 MHz
     input  logic rst_i,
-    input  logic play_ok_i,   // Pulso: Acertaron
-    input  logic play_err_i,  // Pulso: Fallaron / Timeout
+    input  logic play_ok_i,   // Pulso: Acertaron → tono 1000 Hz
+    input  logic play_err_i,  // Pulso: Fallaron / Timeout → tono 300 Hz
     output logic buzzer_o     // Salida de la onda cuadrada al pin del Pmod
 );
 

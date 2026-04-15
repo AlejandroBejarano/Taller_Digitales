@@ -1,10 +1,58 @@
+// =============================================================================
+// uart_hw_tester.sv — Top de prueba de lazo completo UART (enviar 'A', recibir 'B')
+//
+// Propósito:
+//   Módulo de prueba mínimo para verificar el canal UART físico en hardware.
+//   Al presionar el botón, envía el byte 'A' (0x41) y espera recibir 'B' (0x42)
+//   de vuelta. Si lo recibe, enciende led_o.
+//   Útil para confirmar que: PLL, uart_interface, UART.vhd y el cable FTDI
+//   funcionan correctamente antes de integrar la lógica del juego.
+//
+// Flujo de operación:
+//   1. IDLE: espera btn_edge (flanco de subida del botón, ya sincronizado).
+//   2. WRITE_DATA: escribe 0x41 ('A') en registro TX (addr=10).
+//   3. TRIGGER_SEND: activa send en CTRL (addr=00, bit0=1).
+//   4. WAIT_SEND_DONE: espera send_pending=0 (TX libre).
+//   5. WAIT_RX_READY: espera new_rx_flag=1 en CTRL (bit1=1).
+//   6. READ_RX_DATA: lee byte recibido (addr=11); si es 'B', enciende led_o.
+//   7. CLEANUP: limpia new_rx_flag escribiendo CTRL=0; regresa a IDLE.
+//
+// FSM (state_t):
+//   IDLE           – Espera btn_edge (pulso de 1 ciclo al soltar el botón).
+//   WRITE_DATA     – Carga 0x41 en registro TX del uart_interface.
+//   TRIGGER_SEND   – Activa bit0 del registro CTRL para iniciar TX.
+//   WAIT_SEND_DONE – Polling: rdata[0]==0 cuando TX completó.
+//   WAIT_RX_READY  – Polling: rdata[1]==1 cuando llegó un byte.
+//   READ_RX_DATA   – Lee rdata[7:0] (byte recibido); decide si encender LED.
+//   CLEANUP        – Limpia new_rx_flag (CTRL=0) y vuelve a IDLE.
+//
+// Entradas:
+//   clk_i      – Reloj 100 MHz (pin W5 Basys3); PLL genera 16 MHz interno.
+//   rst_i      – BTNC activo alto; resetea PLL y FSM.
+//   btn_send_i – Botón Arriba: flanco de subida inicia el envío.
+//   rx         – Línea serie de recepción (pin FPGA).
+//
+// Salidas:
+//   tx         – Línea serie de transmisión (pin FPGA).
+//   led_o      – Se pone en 1 si la FPGA recibe 'B' (0x42) de vuelta.
+//                Sticky: nunca se apaga salvo por reset.
+//
+// Variables internas:
+//   clk_16MHz       – Reloj de 16 MHz generado por clk_wiz_0.
+//   locked          – Estabilidad del PLL.
+//   rst_sys         – rst_i OR ~locked (asíncrono).
+//   btn_sync_1 / btn_send_synced – Doble sincronizador para metaestabilidad.
+//   btn_prev / btn_edge – Detector de flanco: btn_edge=1 solo 1 ciclo al subir.
+//   we/addr/wdata/rdata – Bus estándar hacia uart_interface.
+//   state / next_state  – FSM con lógica separada (ff + comb).
+// =============================================================================
 `timescale 1ns / 1ps
 
 module uart_hw_tester (
     input  logic clk_i,       // Pin W5 (100 MHz)
     input  logic rst_i,       // Botón Central (Reset)
     input  logic btn_send_i,  // Botón Arriba (Enviar 'A')
-    input  logic rx,          
+    input  logic rx,
     output logic tx,
     output logic led_o        // LED que se encenderá con la 'B'
 );

@@ -1,18 +1,55 @@
 // =============================================================================
-// uart_prueba_3.sv  -  Top de prueba UART corregido
+// uart_prueba_3.sv — Top de prueba UART con eco y LEDs de diagnóstico
 //
-// Correcciones aplicadas:
-//  1. Reset interno: la FSM usa un reset sincrono que se libera cuando
-//     locked=1 Y rst_i=0. Evita que la FSM quede congelada si el PLL
-//     tarda en bloquear o si el boton tiene rebote.
-//  2. WAIT_CYCLES reducido a 2 segundos reales (era correcto, se deja
-//     como parametro con comentario claro para simulacion).
-//  3. El estado S_SEND ahora espera UN ciclo extra antes de leer send
-//     (la FSM da tiempo al FF de send_pending en uart_interface de verse
-//     reflejado en rdata_o).
-//  4. Se agrego un LED de diagnostico: LED[0] = locked, LED[1] = tx activo,
-//     LED[2] = byte recibido, LED[3] = estado de reset interno.
-//     Conectar en XDC para depuracion visual sin ILA.
+// Propósito:
+//   Módulo de prueba independiente para verificar el canal UART.
+//   Al arrancar envía un byte 0x55 y luego entra en modo eco: cualquier
+//   byte recibido desde la PC se retransmite inmediatamente de vuelta.
+//   Útil para comprobar la cadena completa: PLL → uart_interface → UART.vhd.
+//
+// Flujo de operación:
+//   1. Al salir del reset interno el sistema espera WAIT_CYCLES ciclos.
+//   2. Transmite 0x55 (patrón alternante: prueba de todos los bits del TX).
+//   3. Entra en S_IDLE esperando new_rx_flag=1 (byte llegando desde PC).
+//   4. Lee el byte y lo reenvía por TX (eco).
+//   5. Repite desde paso 3 indefinidamente.
+//
+// FSM (state_t):
+//   S_WAIT        – Espera WAIT_CYCLES ciclos de estabilización.
+//   S_WRITE_TX    – Escribe 0x55 en registro TX (addr=10).
+//   S_SEND        – Activa bit send en CTRL (addr=00, bit0=1).
+//   S_SEND_WAIT1  – Espera 1 ciclo para que send_pending aparezca en rdata.
+//   S_WAIT_DONE   – Polling: espera send_pending=0 (TX libre).
+//   S_IDLE        – Espera new_rx_flag=1 (byte entrante desde PC).
+//   S_READ_RX     – Lee byte recibido (addr=11); guarda en rx_byte.
+//   S_CLEAR_NEWRX – Escribe CTRL con bit1=0 para limpiar new_rx_flag.
+//   S_ECHO_TX     – Carga rx_byte en registro TX para el eco.
+//   S_ECHO_SEND   – Activa send para el eco.
+//   S_ECHO_WAIT1  – Ciclo de latencia antes de S_WAIT_DONE.
+//
+// Entradas:
+//   clk_100MHz – Reloj de entrada de la Basys3 (100 MHz); convertido a 16 MHz por PLL.
+//   rst_i      – BTNC activo alto; resetea el PLL y la FSM.
+//   rx         – Línea serie de recepción (pin FPGA).
+//
+// Salidas:
+//   tx         – Línea serie de transmisión (pin FPGA).
+//   led[3:0]   – LEDs de diagnóstico:
+//                  [0] = locked (PLL bloqueado)
+//                  [1] = send_pending (TX activo)
+//                  [2] = new_rx_flag (byte recibido esperando lectura)
+//                  [3] = rst_internal (reset interno activo)
+//
+// Variables internas:
+//   clk_16MHz   – Reloj de 16 MHz generado por el PLL clk_wiz_0.
+//   locked      – Señal del PLL indicando estabilidad del reloj.
+//   rst_internal– Reset sincronizado a 16 MHz (rst_i OR ~locked).
+//   we/addr/wdata/rdata – Bus estándar hacia uart_interface.
+//   counter     – Contador de ciclos para WAIT_CYCLES.
+//   rx_byte     – Último byte recibido; copiado desde rdata en S_READ_RX.
+//
+// Nota:
+//   WAIT_CYCLES = 200 para simulación. Cambiar a 16_000_000*2 para síntesis.
 // =============================================================================
 module uart_prueba_3 (
     input  logic        clk_100MHz,

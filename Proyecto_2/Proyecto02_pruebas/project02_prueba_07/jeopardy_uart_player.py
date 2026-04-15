@@ -22,6 +22,7 @@ import argparse
 import sys
 import time
 import threading
+import queue
 import os
 
 try:
@@ -204,6 +205,40 @@ def print_game_over(score_pc, score_fpga):
     print(f"{RESET}\n")
 
 # =============================================================================
+# Input con timeout (no bloquea si el timer de la FPGA expira primero)
+# =============================================================================
+ANSWER_TIMEOUT = 32  # segundos (30s ronda + 2s buffer)
+
+def timed_input(prompt):
+    """Pide respuesta al usuario con un timeout de ANSWER_TIMEOUT segundos.
+
+    Retorna la string ingresada, o None si el tiempo se agotó.
+    Usa un hilo daemon para que no bloquee indefinidamente el bucle principal.
+    """
+    q = queue.Queue()
+    done = threading.Event()
+
+    def _ask():
+        try:
+            val = input(prompt)
+            q.put(val)
+        except EOFError:
+            q.put(None)
+        finally:
+            done.set()
+
+    t = threading.Thread(target=_ask, daemon=True)
+    t.start()
+    done.wait(timeout=ANSWER_TIMEOUT)
+
+    if q.empty():
+        # El tiempo se agotó antes de que el usuario respondiera
+        print(f"\n\n  {YELLOW}[TIEMPO]{RESET} ¡Se acabaron los {ANSWER_TIMEOUT - 2}s!"
+              f" No se enviará respuesta.")
+        return None
+    return q.get()
+
+# =============================================================================
 # Leer N bytes del puerto serial con timeout
 # =============================================================================
 def read_bytes(ser, count, timeout=10.0):
@@ -276,24 +311,33 @@ def game_loop(ser):
                 print_options(options_text)
 
             # =================================================================
-            # ETX (0x03): Fin de pregunta, PC puede responder
+            # ETX (0x03): Fin de pregunta, PC puede responder (30 segundos)
             # =================================================================
             elif cmd == ETX:
-                # Pedir respuesta al usuario
+                resp = None
+                # Intentar obtener respuesta válida dentro del tiempo límite.
+                # timed_input retorna None si el tiempo se agotó antes de que
+                # el usuario escribiera, de modo que el bucle principal sigue
+                # leyendo los bytes (ENQ/ACK/SOH) que la FPGA envíe.
                 while True:
-                    try:
-                        resp = input(f"\n  {BOLD}➤ Tu respuesta (A/B/C/D): {RESET}").strip().upper()
-                        if resp in ('A', 'B', 'C', 'D'):
-                            break
-                        else:
-                            print(f"  {YELLOW}[!]{RESET} Entrada inválida. Ingresa A, B, C o D.")
-                    except EOFError:
-                        return
+                    raw = timed_input(
+                        f"\n  {BOLD}➤ Tu respuesta (A/B/C/D, {ANSWER_TIMEOUT-2}s): {RESET}"
+                    )
+                    if raw is None:
+                        # Timeout: no enviamos nada; la FPGA ya cerró la ronda
+                        break
+                    raw = raw.strip().upper()
+                    if raw in ('A', 'B', 'C', 'D'):
+                        resp = raw
+                        break
+                    else:
+                        print(f"  {YELLOW}[!]{RESET} Entrada inválida. Ingresa A, B, C o D.")
 
-                # Enviar respuesta como un solo byte ASCII
-                ser.write(resp.encode('ascii'))
-                ser.flush()
-                print(f"  {CYAN}[ENVIADO]{RESET} Respuesta: '{resp}' (0x{ord(resp):02X})")
+                if resp is not None:
+                    # Enviar respuesta como un solo byte ASCII
+                    ser.write(resp.encode('ascii'))
+                    ser.flush()
+                    print(f"  {CYAN}[ENVIADO]{RESET} Respuesta: '{resp}' (0x{ord(resp):02X})")
 
             # =================================================================
             # ENQ (0x05): Resultado de ronda
@@ -319,6 +363,7 @@ def game_loop(ser):
                 score_pc = score_data[0]
                 score_fpga = score_data[1]
                 print(f"\n  {CYAN}[SCORE]{RESET} PC: {score_pc} │ FPGA: {score_fpga}")
+                print(f"  {YELLOW}[PREP] {RESET} Esperando próxima pregunta (~10 s)...")
 
             # =================================================================
             # EOT (0x04): Fin de partida

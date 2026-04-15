@@ -1,22 +1,53 @@
 // =============================================================================
-// uart_game_top.sv - Top-level del subsistema UART para Jeopardy
+// uart_game_top.sv - Top-level del subsistema UART para Jeopardy (modo solo-PC)
 //
-// Integra todos los módulos UART del juego:
-//   - PLL (clk_wiz_0): 100 MHz → 16 MHz
-//   - uart_interface: periférico UART con interfaz estándar de 32 bits
-//   - ROMs: blk_mem_gen_0 (preguntas), blk_mem_gen_1 (respuestas)
-//   - uart_tx_fsm: transmisión de preguntas/opciones
-//   - answer_checker: validación de respuestas del jugador PC
-//   - result_sender: envío de feedback (resultado, score, game over)
-//   - FSM maestra: controla el flujo del juego para la parte UART
-//   - MUX de bus: arbitra acceso al bus UART entre los submódulos
+// Módulo autónomo de juego Jeopardy solo por UART (sin LCD ni jugador FPGA).
+// Integra todos los módulos necesarios para una partida completa de 7 rondas
+// entre el PC y la FPGA por comunicación serial.
 //
-// Señales externas:
-//   - clk_100MHz: reloj del sistema (pin W5 de Basys3)
-//   - rst_i: reset (botón central BTNC)
-//   - btn_start_i: iniciar ronda (botón arriba BTNU)
-//   - rx, tx: líneas UART
-//   - led[3:0]: LEDs de diagnóstico
+// Subsistemas integrados:
+//   - PLL (clk_wiz_0):    100 MHz → 16 MHz
+//   - uart_interface:     periférico UART con bus estándar de 32 bits
+//   - blk_mem_gen_0/1:    ROMs de preguntas (Single-Port, 8-bit × 320 depth)
+//   - uart_tx_fsm:        transmite SOH + pregunta + STX + opciones + ETX al PC
+//   - answer_checker:     valida la respuesta A/B/C/D recibida del PC
+//   - result_sender:      envía ENQ (resultado), ACK (score) y EOT (fin) al PC
+//   - FSM maestra (G_*):  controla el flujo de las 7 rondas
+//   - MUX de bus UART:    arbitra acceso al bus entre los 3 submódulos TX/RX
+//
+// Entradas:
+//   clk_100MHz  – OSC 100 MHz (pin W5 de la Basys3).
+//   rst_i       – Reset activo alto (BTNC).
+//   btn_start_i – Iniciar partida (BTNU); detectado como flanco de subida.
+//   rx          – Línea RX UART (del PC/USB-serial).
+//
+// Salidas:
+//   tx          – Línea TX UART (hacia el PC).
+//   led[3:0]    – LEDs de diagnóstico:
+//                   led[3] = PLL locked
+//                   led[0] = transmitiendo pregunta
+//                   led[1] = esperando respuesta
+//                   led[2] = respuesta correcta
+//                   led[3:0]=1111 al finalizar partida.
+//
+// FSM maestra (game_state_t):
+//   G_IDLE            – Espera flanco en btn_start_i para iniciar partida.
+//   G_SELECT_QUESTION – Elige una pregunta no usada con LFSR + find_unused_question.
+//   G_SEND_QUESTION   – Lanza uart_tx_fsm con la pregunta seleccionada.
+//   G_WAIT_TX_DONE    – Espera txfsm_done; luego habilita answer_checker.
+//   G_WAIT_ANSWER     – Espera respuesta válida del PC (ac_answer_valid).
+//   G_PROCESS_ANSWER  – Actualiza score_pc si la respuesta fue correcta.
+//   G_SEND_RESULT     – Envía ENQ+resultado vía result_sender.
+//   G_WAIT_RESULT_DONE– Espera rs_done.
+//   G_SEND_SCORE      – Envía ACK+score_pc+score_fpga vía result_sender.
+//   G_WAIT_SCORE_DONE – Espera rs_done.
+//   G_NEXT_ROUND      – Si quedan rondas, vuelve a G_SELECT_QUESTION; si no, G_GAME_OVER.
+//   G_GAME_OVER       – Envía EOT (0x04) vía result_sender.
+//   G_WAIT_GAMEOVER_DONE – Espera rs_done y vuelve a G_IDLE.
+//
+// NOTA: Este módulo NO implementa temporizador de 30 s ni período de preparación
+//       de 10 s entre rondas. Es el diseño de subsistema UART puro; para el juego
+//       completo (con LCD y temporizadores) usar jeopardy_top.sv.
 // =============================================================================
 `timescale 1ns / 1ps
 
